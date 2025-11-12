@@ -1,17 +1,296 @@
-// public leaderboard with simple validation (includes 'hit' field)
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /scores/{playerId} {
-      allow read: if true;
-      allow write: if request.time < timestamp.date(2100,1,1)
-                   && request.resource.data.keys().hasOnly(['name','score','picks','ts','hit'])
-                   && request.resource.data.name is string
-                   && request.resource.data.score is number
-                   && request.resource.data.score >= 0 && request.resource.data.score <= 100
-                   && request.resource.data.picks is list
-                   && request.resource.data.picks.size() <= 2
-                   && (request.resource.data.hit == true || request.resource.data.hit == false);
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>sVg science project: Can you Pee better than Spanna?</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Firebase compat SDKs for single-file simplicity -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <style>html,body{background:#eef2ff;}</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const {useState,useEffect,useRef,useMemo}=React;
+    const clamp=(v,min=0,max=1)=>Math.max(min,Math.min(max,v));
+    const rand=(min,max)=>Math.random()*(max-min)+min;
+    const G=9.81, ANGLE_RAD=Math.PI/4;
+
+    // ===== Firebase setup (REPLACE with your config) =====
+    const firebaseConfig={
+      apiKey:"AIzaSyDDf_4ZwQSqoOPPYI240kmUL2D1QEDHTSs",
+      authDomain:"svgscience-6bb49.firebaseapp.com",
+      projectId:"svgscience-6bb49",
+      storageBucket:"svgscience-6bb49.firebasestorage.app",
+      messagingSenderId:"493468414507",
+      appId:"1:493468414507:web:fc5b8eaa2ea72763d3706e",
+      measurementId: "G-2TW8KPGW6L"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db=firebase.firestore();
+    const scoresRef=db.collection("scores");
+
+    const Card=({children,className=""})=> <div className={`rounded-2xl shadow-lg bg-white p-4 ${className}`}>{children}</div>;
+    const Button=({children,onClick,disabled,className=""})=> (
+      <button onClick={onClick} disabled={disabled}
+        className={`w-full rounded-2xl px-4 py-3 font-semibold shadow ${disabled?"bg-gray-300 text-gray-500":"bg-indigo-600 text-white active:translate-y-[1px]"} ${className}`}>{children}</button>
+    );
+
+    function Game(){
+      const[stage,setStage]=useState("menu");
+      const[name,setName]=useState("");
+      const[picks,setPicks]=useState([]);
+      const[barPos,setBarPos]=useState(0);
+      const[barDir,setBarDir]=useState(1);
+      const[running,setRunning]=useState(false);
+      const[locked,setLocked]=useState(false);
+      const[wind,setWind]=useState(0);
+      const[distanceTarget,setDistanceTarget]=useState(130);
+      const[score,setScore]=useState(null);
+      const[distResult,setDistResult]=useState(null);
+      const[selectedVal,setSelectedVal]=useState(null);
+      const[showJet,setShowJet]=useState(false);
+      const[hit,setHit]=useState(false);
+      const[pathRef]=[useRef(null)];
+      const[board,setBoard]=useState([]);
+
+      // realtime leaderboard subscription
+      useEffect(()=>{
+        const unsub=scoresRef.orderBy("score","desc").limit(10).onSnapshot(snap=>{
+          const rows=[]; snap.forEach(doc=>rows.push(doc.data()));
+          setBoard(rows);
+        });
+        return unsub;
+      },[]);
+
+      // write/overwrite by lowercased name
+      async function pushBoardRemote(entry){
+        const key=entry.name.trim().toLowerCase()||("anon-"+Math.random().toString(36).slice(2));
+        await scoresRef.doc(key).set({
+          name: entry.name||"Anon",
+          score: entry.score,
+          picks: entry.picks,
+          hit: entry.hit||false,
+          ts: firebase.firestore.FieldValue.serverTimestamp(),
+        }, { merge:true });
+      }
+
+      // generous buffs (easy mode)
+      const attrs=useMemo(()=>{
+        const p=new Set(picks);
+        const aim=1+(p.has("coke")?1.2:0);
+        const strength=1+(p.has("fanta")?0.5:0);
+        const push=p.has("sprite")?20:0;
+        return {aim,strength,push};
+      },[picks]);
+
+      // bar animation
+      const lastTRef=useRef(null);
+      useEffect(()=>{
+        if(!running||locked) return;
+        let raf; const speed=3.2;
+        const loop=t=>{
+          if(!lastTRef.current) lastTRef.current=t;
+          const dt=(t-lastTRef.current)/1000; lastTRef.current=t;
+          setBarPos(p=>{ let n=p+dt*speed*barDir; if(n>1){n=1-(n-1); setBarDir(-1);} if(n<0){n=-n; setBarDir(1);} return n; });
+          raf=requestAnimationFrame(loop);
+        };
+        raf=requestAnimationFrame(loop);
+        return ()=>cancelAnimationFrame(raf);
+      },[running,locked,barDir]);
+
+      const beginRound=()=>{
+        setWind(rand(-0.3,0.3));
+        setDistanceTarget(rand(120,130));
+        setBarPos(Math.random());
+        setBarDir(Math.random()<0.5?-1:1);
+        setLocked(false); setSelectedVal(null); setScore(null);
+        setDistResult(null); setShowJet(false); setHit(false);
+        lastTRef.current=null; setStage("play"); setRunning(true);
+      };
+
+      const lockStrength=()=>{
+        if(!running||locked) return;
+        const jitterStd=0.01/attrs.aim; const jitter=rand(-jitterStd,jitterStd);
+        const val=clamp(barPos+jitter,0,1); setSelectedVal(val);
+        const v=val*26*attrs.strength;
+        const rangeNoWind=(v*v*Math.sin(2*ANGLE_RAD))/G;
+        const eff=rangeNoWind+attrs.push; setDistResult(eff);
+        const target=distanceTarget+wind; const err=Math.abs(eff-target);
+        const s=Math.max(0,Math.round(100-err)); setScore(s);
+        const didHit=err<14; setHit(didHit);
+        setLocked(true); setRunning(false); setShowJet(true);
+        pushBoardRemote({ name, score:s, picks:[...picks], hit:didHit, ts:Date.now() });
+      };
+
+      const canStart=name.trim().length>0 && picks.length===2;
+      const togglePick=id=>setPicks(c=> c.includes(id)? c.filter(x=>x!==id) : (c.length>=2?c:[...c,id]));
+      const resetAll=()=> setStage("menu");
+
+      function buildPathD(){
+        const startX=10,startY=30,shieldX=75;
+        const tgt=(distanceTarget+wind)||1, eff=distResult??0;
+        const ratio=clamp(eff/tgt,0,1.25);
+        const endX=startX+ratio*(shieldX-startX);
+        const midX=(startX+endX)/2;
+        const lift=6+(selectedVal??0)*7;
+        const apexY=Math.max(6,startY-lift);
+        return `M${startX},${startY} Q ${midX.toFixed(2)},${apexY.toFixed(2)} ${endX.toFixed(2)},${startY}`;
+      }
+
+      return (
+        <div className="min-h-screen w-full bg-gradient-to-b from-indigo-50 to-white text-gray-900">
+          <div className="mx-auto max-w-md p-4 pb-24">
+            <header className="py-4 text-center">
+              <h1 className="text-3xl font-extrabold tracking-tight">sVg science project: Can you Pee better than Spanna?</h1>
+              <p className="text-sm text-gray-600">Tap at the perfect moment to hit Myth’s shield.</p>
+            </header>
+
+            <Card className="mb-4">
+              <h2 className="mb-2 text-lg font-bold">Top Pilots</h2>
+              {board.length===0 ? (
+                <p className="text-sm text-gray-600">No scores yet — be the first!</p>
+              ) : (
+                <ol className="space-y-1">
+                  {board.map((r,i)=> (
+                    <li key={r.name||i} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 text-right font-mono">{i+1}.</span>
+                        <span className="font-semibold">{r.name}</span>
+                        <span className="text-xs text-gray-500">[{(r.picks||[]).join(" + ")}]</span>
+                      </div>
+                      <span className="font-mono">{r.score}{r.hit && <span className="text-yellow-500 ml-1">⭐</span>}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </Card>
+
+            {stage==="menu" && (
+              <Card className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium">Your name</label>
+                  <input className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="Enter your pilot name" value={name} onChange={e=>setName(e.target.value)} inputMode="text" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium">Pick two drinks for buffs</div>
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    {[{id:"coke",name:"Coca-Cola",desc:"Aim",emoji:"🥤"},{id:"fanta",name:"Fanta",desc:"Strength",emoji:"🍊"},{id:"sprite",name:"Sprite",desc:"Push",emoji:"🛡️"}].map(o=> (
+                      <button key={o.id} onClick={()=>togglePick(o.id)}
+                        className={`rounded-2xl border px-3 py-3 text-center ${picks.includes(o.id)?"border-indigo-600 bg-indigo-50":"border-gray-300 bg-white"}`}>
+                        <div className="text-2xl">{o.emoji}</div>
+                        <div className="text-sm font-semibold">{o.name}</div>
+                        <div className="text-xs text-gray-500">+ {o.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500">You can only drink two.</div>
+                </div>
+                <Button onClick={beginRound} disabled={!name.trim() || picks.length!==2}>Start</Button>
+              </Card>
+            )}
+
+            {stage==="play" && (
+              <Card className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm">Pilot: <span className="font-semibold">{name}</span></div>
+                  <div className="text-xs text-gray-500">Wind: {wind.toFixed(1)}</div>
+                </div>
+                <div className="relative h-40 overflow-hidden rounded-2xl bg-gradient-to-b from-white to-indigo-50">
+                  <svg viewBox="0 0 100 40" className="absolute inset-0">
+                    <line x1="2" y1="35" x2="98" y2="35" stroke="#c7cbe9" strokeWidth=".6"/>
+                    {/* Player */}
+                    <g stroke="#111827" strokeWidth="1.6" strokeLinecap="round">
+                      <circle cx="10" cy="24" r="3" fill="none"/>
+                      <line x1="10" y1="27" x2="10" y2="32"/>
+                      <line x1="10" y1="29" x2="6" y2="35"/>
+                      <line x1="10" y1="29" x2="14" y2="35"/>
+                      <line x1="10" y1="26" x2="15" y2="28"/>
+                    </g>
+                    <text x="10" y="18" textAnchor="middle" fontSize="3" fill="#111827">{name||"You"}</text>
+                    {/* Myth + shield (facing player) */}
+                    <g transform="translate(85,0)" stroke="#111827" strokeWidth="1.6" strokeLinecap="round">
+                      <circle cx="0" cy="24" r="3" fill="none"/>
+                      <line x1="0" y1="27" x2="0" y2="32"/>
+                      <line x1="0" y1="29" x2="-4" y2="35"/>
+                      <line x1="0" y1="29" x2="4" y2="35"/>
+                      <line x1="0" y1="26" x2="-6" y2="28"/>
+                      <polygon points="-14,24 -7,22 -7,30 -14,32" fill="#93c5fd" stroke="#1e3a8a"/>
+                    </g>
+                    <text x="85" y="18" textAnchor="middle" fontSize="3" fill="#111827">Myth</text>
+
+                    {/* Trajectory */}
+                    {showJet && distResult!=null && (
+                      <g>
+                        <path d={buildPathD()} fill="none" stroke="#facc15" strokeWidth="1.6"/>
+                        <circle r="1.8" fill="#facc15">
+                          <animateMotion dur="1.4s" fill="freeze" path={buildPathD()} begin="0s"/>
+                          <set attributeName="r" to="3" begin="1.4s" dur="0.2s" fill="freeze"/>
+                          <set attributeName="fill" to="#fbbf24" begin="1.4s" dur="0.2s" fill="freeze"/>
+                        </circle>
+                        {hit && (
+                          <circle cx="75" cy="30" r="3" fill="#fde047">
+                            <animate attributeName="r" values="3;8;0" dur="0.4s" begin="1.4s"/>
+                            <animate attributeName="opacity" values="1;0" dur="0.4s" begin="1.4s"/>
+                          </circle>
+                        )}
+                      </g>
+                    )}
+                  </svg>
+                </div>
+
+                <div className="select-none">
+                  <div className="mb-1 flex items-end justify-between">
+                    <div className="text-sm font-semibold">Jet Strength</div>
+                    <div className="text-xs text-gray-500">Tap anywhere to lock</div>
+                  </div>
+                  <div className={`relative h-12 w-full touch-manipulation rounded-2xl border-2 ${locked?"border-green-500":"border-gray-300"}`}
+                       onClick={()=>lockStrength()}
+                       onTouchStart={(e)=>{ e.preventDefault(); lockStrength(); }}>
+                    <div className="absolute inset-2 rounded-xl bg-gray-100"></div>
+                    <div className="absolute top-1/2 h-8 w-3 -translate-y-1/2 rounded bg-indigo-600 shadow" style={{ left: `calc(${barPos*100}% - 6px)` }}></div>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs text-gray-500">
+                    <div>🎯 Aim x{attrs.aim.toFixed(2)}</div>
+                    <div>💪 Strength x{attrs.strength.toFixed(2)}</div>
+                    <div>🛡️ Push +{attrs.push.toFixed(0)}m</div>
+                  </div>
+                </div>
+
+                <Button onClick={()=>lockStrength()} disabled={locked}>Tap to lock</Button>
+              </Card>
+            )}
+
+            {stage!=="menu" && locked && (
+              <Card className="mt-4 space-y-3">
+                <h3 className="text-lg font-bold">Result</h3>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-xl bg-gray-50 p-3"><div className="text-gray-500">Locked value</div><div className="font-mono text-lg">{(selectedVal??0).toFixed(3)}</div></div>
+                  <div className="rounded-xl bg-gray-50 p-3"><div className="text-gray-500">Distance achieved</div><div className="font-mono text-lg">{(distResult??0).toFixed(1)}</div></div>
+                  <div className="rounded-xl bg-gray-50 p-3"><div className="text-gray-500">Target distance</div><div className="font-mono text-lg">{(distanceTarget+wind).toFixed(1)}</div></div>
+                  <div className="rounded-xl bg-gray-50 p-3"><div className="text-gray-500">Score</div><div className="font-mono text-2xl">{score}{hit && <span className="text-yellow-500 ml-1">⭐</span>}</div></div>
+                </div>
+                <div className="flex gap-2"><Button onClick={beginRound}>Play again</Button><Button onClick={resetAll} className="!bg-gray-800">Change name/drinks</Button></div>
+              </Card>
+            )}
+
+            <footer className="py-8 text-center text-xs text-gray-500">
+              Tap anywhere on the strength bar to lock it. The yellow jet appears after you tap and can hit Myth’s shield with perfect timing!
+            </footer>
+          </div>
+        </div>
+      );
     }
-  }
-}
+
+    const root=ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Game/>);
+  </script>
+</body>
+</html>
