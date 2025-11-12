@@ -23,13 +23,13 @@
     const G=9.81, ANGLE_RAD=Math.PI/4;
 
     // ===== Firebase setup (REPLACE with your config) =====
-    const firebaseConfig = {
-      apiKey: "AIzaSyDDf_4ZwQSqoOPPYI240kmUL2D1QEDHTSs",
-      authDomain: "svgscience-6bb49.firebaseapp.com",
-      projectId: "svgscience-6bb49",
-      storageBucket: "svgscience-6bb49.firebasestorage.app",
-      messagingSenderId: "493468414507",
-      appId: "1:493468414507:web:fc5b8eaa2ea72763d3706e",
+    const firebaseConfig={
+      apiKey:"AIzaSyDDf_4ZwQSqoOPPYI240kmUL2D1QEDHTSs",
+      authDomain:"svgscience-6bb49.firebaseapp.com",
+      projectId:"svgscience-6bb49",
+      storageBucket:"svgscience-6bb49.firebasestorage.app",
+      messagingSenderId:"493468414507",
+      appId:"1:493468414507:web:fc5b8eaa2ea72763d3706e",
       measurementId: "G-2TW8KPGW6L"
     };
     firebase.initializeApp(firebaseConfig);
@@ -57,7 +57,6 @@
       const[selectedVal,setSelectedVal]=useState(null);
       const[showJet,setShowJet]=useState(false);
       const[hit,setHit]=useState(false);
-      const[angleRad,setAngleRad]=useState(ANGLE_RAD);
       const[pathRef]=[useRef(null)];
       const[board,setBoard]=useState([]);
 
@@ -85,9 +84,9 @@
       // generous buffs (easy mode)
       const attrs=useMemo(()=>{
         const p=new Set(picks);
-        const aim=1+(p.has("coke")?1.2:0);
+        const aim=1+(p.has("coke")?1.0:0);
         const strength=1+(p.has("fanta")?0.5:0);
-        const push=p.has("sprite")?20:0;
+        const push=p.has("sprite")?15:0;
         return {aim,strength,push};
       },[picks]);
 
@@ -107,9 +106,8 @@
       },[running,locked,barDir]);
 
       const beginRound=()=>{
-        setWind(rand(-0.3,0.3));
+        setWind(rand(-0.5,0.4));
         setDistanceTarget(rand(120,130));
-        setAngleRad(rand((38*Math.PI)/180,(48*Math.PI)/180)); // randomize angle for extra sensitivity
         setBarPos(Math.random());
         setBarDir(Math.random()<0.5?-1:1);
         setLocked(false); setSelectedVal(null); setScore(null);
@@ -119,44 +117,16 @@
 
       const lockStrength=()=>{
         if(!running||locked) return;
-        // --- Highly sensitive trajectory with cross-coupled wind/buffs ---
-        const jitterStd = 0.01/attrs.aim; // timing precision still helps
-        const jitter = rand(-jitterStd, jitterStd);
-        const val = clamp(barPos + jitter, 0, 1);
-        setSelectedVal(val);
-
-        // Base exit speed then amplify small changes via nonlinear coupling
-        const v0 = val*26;
-        const S = attrs.strength, A = attrs.aim, P = attrs.push;
-        const vEff = (v0 * (1 + 0.40*(S-1)) * Math.exp(0.04*wind)) + 0.03*P; // speed very sensitive to wind/strength
-        const angleEff = angleRad + (wind*0.06) - 0.04*(A-1);                 // wind tilts up/down, aim stabilizes angle
-
-        // Quadratic drag (worse with low aim). Wind nudges horizontal velocity.
-        const cd = 0.016*(2 - A) + 0.004; // 0.022..0.004
-        let vx = vEff*Math.cos(angleEff) + wind*(0.9 + 0.02*P);
-        let vy = vEff*Math.sin(angleEff);
-        let x=0, y=0; const dt=0.02; let steps=0;
-        for(; steps<3000; steps++){
-          const speed = Math.hypot(vx,vy);
-          const ax = -cd*speed*vx;        // drag opposes velocity
-          const ay = -G - cd*speed*vy;    // gravity + vertical drag
-          vx += ax*dt; vy += ay*dt;
-          x  += vx*dt; y  += vy*dt;
-          if(y<=0 && steps>5) break;      // landed
-        }
-        // Push adds carry after landing to keep sprite meaningful
-        const eff = Math.max(0, x + P*0.5);
-        setDistResult(eff);
-
-        const target = distanceTarget; // wind already baked into sim
-        const err = Math.abs(eff - target);
-        const s = Math.max(0, Math.round(100 - err));
-        setScore(s);
-
-        const didHit = err < 12; // stricter window now that physics is more sensitive
-        setHit(didHit);
+        const jitterStd=0.01/attrs.aim; const jitter=rand(-jitterStd,jitterStd);
+        const val=clamp(barPos+jitter,0,1); setSelectedVal(val);
+        const v=val*26*attrs.strength;
+        const rangeNoWind=(v*v*Math.sin(2*ANGLE_RAD))/G;
+        const eff=rangeNoWind+attrs.push; setDistResult(eff);
+        const target=distanceTarget+wind; const err=Math.abs(eff-target);
+        const s=Math.max(0,Math.round(100-err)); setScore(s);
+        const didHit=err<8; setHit(didHit);
+        const DRAG = 0.018; 
         setLocked(true); setRunning(false); setShowJet(true);
-
         pushBoardRemote({ name, score:s, picks:[...picks], hit:didHit, ts:Date.now() });
       };
 
@@ -166,7 +136,7 @@
 
       function buildPathD(){
         const startX=10,startY=30,shieldX=75;
-        const tgt=distanceTarget||1, eff=distResult??0;
+        const tgt=(distanceTarget+wind)||1, eff=distResult??0;
         const ratio=clamp(eff/tgt,0,1.25);
         const endX=startX+ratio*(shieldX-startX);
         const midX=(startX+endX)/2;
