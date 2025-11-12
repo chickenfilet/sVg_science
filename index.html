@@ -94,7 +94,7 @@
       const lastTRef=useRef(null);
       useEffect(()=>{
         if(!running||locked) return;
-        let raf; const speed=3.2;
+        let raf; const speed=3.8;
         const loop=t=>{
           if(!lastTRef.current) lastTRef.current=t;
           const dt=(t-lastTRef.current)/1000; lastTRef.current=t;
@@ -106,7 +106,7 @@
       },[running,locked,barDir]);
 
       const beginRound=()=>{
-        setWind(rand(-0.3,0.3));
+        setWind(rand(-0.5,0.4));
         setDistanceTarget(rand(120,130));
         setBarPos(Math.random());
         setBarDir(Math.random()<0.5?-1:1);
